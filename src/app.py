@@ -21,11 +21,6 @@ from generate import (
 )
 from supabase_client import save_to_vault, get_vault_images, delete_from_vault
 
-# DEBUG - Remove after testing
-load_dotenv()
-print("DEBUG - Replicate token exists:", bool(os.getenv("REPLICATE_API_TOKEN")))
-print("DEBUG - Token starts with:", os.getenv("REPLICATE_API_TOKEN", "MISSING")[:10])
-
 # Brand colors
 NAVY = "#2D2A5F"
 GOLD = "#E8A838"
