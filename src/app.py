@@ -19,6 +19,12 @@ from generate import (
     get_model_dimension_params,
     generate_image,
 )
+from supabase_client import save_to_vault, get_vault_images, delete_from_vault
+
+# DEBUG - Remove after testing
+load_dotenv()
+print("DEBUG - Replicate token exists:", bool(os.getenv("REPLICATE_API_TOKEN")))
+print("DEBUG - Token starts with:", os.getenv("REPLICATE_API_TOKEN", "MISSING")[:10])
 
 # Brand colors
 NAVY = "#2D2A5F"
@@ -126,6 +132,114 @@ def download_image_to_bytes(url: str) -> bytes:
         return response.read()
 
 
+def truncate_text(text: str, max_length: int = 50) -> str:
+    """Truncate text to max_length with ellipsis."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rstrip() + "..."
+
+
+def render_vault_page():
+    """Render the Vault page showing saved images."""
+    # Fetch vault images
+    result = get_vault_images()
+
+    if not result["success"]:
+        st.error(f"Failed to load Vault: {result.get('error', 'Unknown error')}")
+        st.info("Make sure Supabase is configured correctly in your environment.")
+        return
+
+    images = result["data"]
+
+    # Header with count
+    st.markdown(
+        f'## 🗄️ Your Vault <span class="vault-count">({len(images)} images)</span>',
+        unsafe_allow_html=True
+    )
+
+    # Empty state
+    if not images:
+        st.markdown(
+            '<div class="vault-empty">'
+            '<h3>Your vault is empty</h3>'
+            '<p>Generate some images and save your favorites!</p>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+        return
+
+    # Display images in 3-column grid
+    cols = st.columns(3)
+
+    for idx, image in enumerate(images):
+        col = cols[idx % 3]
+
+        with col:
+            st.markdown('<div class="vault-card">', unsafe_allow_html=True)
+
+            # Image thumbnail (clickable via expander)
+            with st.expander("🖼️ View full size", expanded=False):
+                st.image(image["image_url"], use_container_width=True)
+
+            # Thumbnail preview
+            st.image(image["image_url"], use_container_width=True)
+
+            # Prompt with tooltip
+            full_prompt = image["prompt"]
+            truncated = truncate_text(full_prompt, 50)
+            st.markdown(
+                f'<p class="vault-prompt" title="{full_prompt}">{truncated}</p>',
+                unsafe_allow_html=True
+            )
+
+            # Metadata
+            created_date = image["created_at"][:10] if image.get("created_at") else "Unknown"
+            st.markdown(
+                f'<p class="vault-meta">'
+                f'<strong>{image["model"]}</strong> · ${float(image["cost"]):.3f} · {created_date}'
+                f'</p>',
+                unsafe_allow_html=True
+            )
+
+            # Action buttons
+            btn_col1, btn_col2 = st.columns(2)
+
+            with btn_col1:
+                # Download button - fetch image data
+                try:
+                    image_bytes = download_image_to_bytes(image["image_url"])
+                    st.download_button(
+                        label="💾",
+                        data=image_bytes,
+                        file_name=f"vault_{image['id'][:8]}.webp",
+                        mime="image/webp",
+                        key=f"download_{image['id']}",
+                        use_container_width=True
+                    )
+                except Exception:
+                    st.button("💾", disabled=True, key=f"download_{image['id']}")
+
+            with btn_col2:
+                # Delete button with confirmation
+                delete_key = f"delete_{image['id']}"
+                confirm_key = f"confirm_{image['id']}"
+
+                if st.session_state.get(confirm_key, False):
+                    if st.button("✓ Confirm", key=delete_key, type="primary", use_container_width=True):
+                        delete_result = delete_from_vault(image["id"])
+                        if delete_result["success"]:
+                            st.session_state[confirm_key] = False
+                            st.rerun()
+                        else:
+                            st.error("Delete failed")
+                else:
+                    if st.button("🗑️", key=delete_key, use_container_width=True):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+
 def main():
     # Page config with favicon
     page_icon = str(LOGO_PATH) if LOGO_PATH.exists() else "🎨"
@@ -171,6 +285,44 @@ def main():
             font-size: 0.85rem;
             color: #666;
         }}
+
+        /* Vault card styling */
+        .vault-card {{
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 0.75rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            background: white;
+        }}
+        .vault-card:hover {{
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }}
+        .vault-prompt {{
+            font-size: 0.9rem;
+            color: #333;
+            margin: 0.5rem 0;
+            line-height: 1.4;
+        }}
+        .vault-meta {{
+            font-size: 0.8rem;
+            color: #666;
+        }}
+        .vault-empty {{
+            text-align: center;
+            padding: 3rem;
+            color: #888;
+        }}
+        .vault-count {{
+            color: {GOLD};
+            font-weight: 600;
+        }}
+
+        /* Discard button styling */
+        .stButton > button[kind="secondary"] {{
+            border-color: #ccc !important;
+            color: #666 !important;
+        }}
         </style>
     """, unsafe_allow_html=True)
 
@@ -188,6 +340,22 @@ def main():
         st.markdown('<div class="footer">Powered by OneMetrik</div>', unsafe_allow_html=True)
         st.stop()
 
+    # Sidebar navigation
+    with st.sidebar:
+        st.markdown(f"### Navigation")
+        page = st.radio(
+            "Go to",
+            ["🎨 Generate", "🗄️ Vault"],
+            label_visibility="collapsed"
+        )
+
+    # Route to appropriate page
+    if page == "🗄️ Vault":
+        render_vault_page()
+        st.markdown('<div class="footer">Powered by OneMetrik</div>', unsafe_allow_html=True)
+        st.stop()
+
+    # --- Generate Page ---
     # Check API token (st.secrets first, then .env)
     api_token = get_secret("REPLICATE_API_TOKEN")
     if not api_token:
@@ -321,23 +489,12 @@ def main():
         st.subheader("Generated Image")
 
         # Display image
-        st.image(st.session_state.generated_image, width="stretch")
-
-        # Download button
-        st.download_button(
-            label="Download Image",
-            data=st.session_state.generated_image,
-            file_name=f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.webp",
-            mime="image/webp",
-            width="stretch"
-        )
+        st.image(st.session_state.generated_image, use_container_width=True)
 
         # Metadata
-        st.subheader("Details")
         meta = st.session_state.image_metadata
-
         st.markdown(f"**Prompt:** {meta['prompt']}")
-        if meta["enhanced_prompt"]:
+        if meta.get("enhanced_prompt"):
             st.markdown(f"**Enhanced:** {meta['enhanced_prompt']}")
 
         detail_col1, detail_col2, detail_col3 = st.columns(3)
@@ -347,6 +504,44 @@ def main():
             st.markdown(f"**Size:** {meta['dimensions']}")
         with detail_col3:
             st.markdown(f"**Cost:** ${meta['cost']:.3f}")
+
+        st.divider()
+
+        # Action buttons: Add to Vault, Discard, Download
+        btn_col1, btn_col2, btn_col3 = st.columns(3)
+
+        with btn_col1:
+            if st.button("⭐ Add to Vault", type="primary", use_container_width=True):
+                with st.spinner("Saving to Vault..."):
+                    result = save_to_vault(
+                        image_data=st.session_state.generated_image,
+                        prompt=meta["prompt"],
+                        model=meta["model"],
+                        cost=meta["cost"]
+                    )
+                    if result["success"]:
+                        del st.session_state.generated_image
+                        del st.session_state.image_metadata
+                        st.success("Added to Vault!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to save: {result.get('error', 'Unknown error')}")
+
+        with btn_col2:
+            if st.button("🗑️ Discard", use_container_width=True):
+                del st.session_state.generated_image
+                del st.session_state.image_metadata
+                st.info("Discarded - ready for next prompt")
+                st.rerun()
+
+        with btn_col3:
+            st.download_button(
+                label="💾 Download",
+                data=st.session_state.generated_image,
+                file_name=f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.webp",
+                mime="image/webp",
+                use_container_width=True
+            )
 
     # Footer
     st.markdown('<div class="footer">Powered by OneMetrik</div>', unsafe_allow_html=True)

@@ -1,3 +1,4 @@
 replicate
 python-dotenv
 streamlit
+supabase
